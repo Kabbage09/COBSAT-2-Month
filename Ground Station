@@ -1,285 +1,121 @@
-#------------------------------
-# Day-of checklist
-# 1. Change barometer reading
-# 2. Set sim to false
-# 3. Don't cry
-#------------------------------
-
-import time
+import sys
 import random
-import argparse
-import csv
-import threading
-from collections import deque
-import matplotlib.pyplot as plt
+from datetime import datetime
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QGroupBox
+)
+from PyQt6.QtCore import QTimer
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--simulate", action="store_true", help="Run in simulator mode")
-args = parser.parse_args()
-SIMULATOR_MODE = args.simulate  # SET SIM TO FALSE ON LAUNCH DAY
+class GroundStation(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("COB-SAT Ground Station")
+        self.resize(1200, 800)
 
-# if not sim, it imports libraries
-if not SIMULATOR_MODE:
-    import board
-    import busio
-    import serial
-    import pynmea2
-    import adafruit_bno055
-    import adafruit_bmp3xx
+        main_layout = QHBoxLayout()
+        left_layout = QVBoxLayout()
+        graph_grid = QGridLayout()
 
-    i2c = busio.I2C(board.SCL, board.SDA)
-    bno = adafruit_bno055.BNO055_I2C(i2c)
-    bmp = adafruit_bmp3xx.BMP3XX_I2C(i2c)
-    bmp.sea_level_pressure = 000.00  # get an accurate reading day of
-    gps_serial = serial.Serial('/dev/ttyUSB0', 9600, timeout=1)
-else:
-    #sims here
-    bno = None
-    bmp = None
-    gps_serial = None
+        self.summary = QGroupBox("Mission Summary")
+        summary_layout = QVBoxLayout()
+        self.labels = {}
+        fields = [
+            "Mission Time", "Packet Count", "Flight State", "Flight Time", "Altitude",
+            "Temperature", "Pressure", "Voltage", "GPS Time", "GPS Date",
+            "GPS Latitude", "GPS Longitude"
+        ]
+        for field in fields:
+            label = QLabel(f"{field}: ---")
+            self.labels[field] = label
+            summary_layout.addWidget(label)
+        self.summary.setLayout(summary_layout)
+        left_layout.addWidget(self.summary)
 
-def read_voltage():
-    # !! look into ADC and replace w real logic
-    return 3.0  # simulator
+        for text in ["Release", "Retrieve Save Data", "Activate LED & Buzzer"]:
+            btn = QPushButton(text)
+            left_layout.addWidget(btn)
 
-def read_gps():
-    if SIMULATOR_MODE:
-        return random.uniform(34.7, 34.8), random.uniform(-86.7, -86.6)
-    else:
-        while True:
-            line = gps_serial.readline().decode('ascii', errors='replace')
-            if line.startswith('$GPGGA'):
-                try:
-                    msg = pynmea2.parse(line)
-                    return msg.latitude, msg.longitude
-                except:
-                    return None, None
+        self.graphs = {}
+        graph_titles = [
+            "Altitude vs Time", "Temperature vs Time", "Pressure vs Time",
+            "Velocity vs Time", "Displacement vs Time", "Tilt vs Time"
+        ]
+        for i, title in enumerate(graph_titles):
+            fig = Figure(figsize=(4, 3))
+            canvas = FigureCanvas(fig)
+            ax = fig.add_subplot(111)
+            ax.set_title(title)
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel(title.split(" vs ")[0])
+            self.graphs[title] = (ax, [], [], canvas)
+            row, col = divmod(i, 2)
+            graph_grid.addWidget(canvas, row, col)
 
-prev_altitude = None
-prev_time = None
+        main_layout.addLayout(left_layout, 1)
+        main_layout.addLayout(graph_grid, 2)
+        self.setLayout(main_layout)
 
-times = deque(maxlen=100)
-altitudes = deque(maxlen=100)
-temperature = deque(maxlen=100)
-pressure = deque(maxlen=100)
-velocity_data = deque(maxlen=100)
-tilt_x = deque(maxlen=100)
-tilt_y = deque(maxlen=100)
-voltage_data = deque(maxlen=100)
-gps_lat = deque(maxlen=100)
-gps_lon = deque(maxlen=100)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.receive_packet)
+        self.timer.start(1000)
+        self.time_counter = 0
 
-start_time = time.time()
-packet_count = 0
-state = "POWER"
+    def receive_packet(self):
+        packet = self.generate_simulated_packet()
+        self.parse_packet(packet)
 
-def transition(new_state):
-    global state
-    if state != new_state:
-        print(f"STATE CHANGE: {state} → {new_state}")
-        state = new_state
+    def generate_simulated_packet(self):
+        team_id = "UAH01"
+        mission_time = datetime.now().strftime("%H:%M:%S")
+        packet_count = str(self.time_counter)
+        sw_state = random.choice(["DEPLOYED", "STANDBY"])
+        pl_state = random.choice(["ACTIVE", "IDLE"])
+        altitude = str(round(random.uniform(1000, 3000), 2))
+        temp = str(round(random.uniform(15.0, 30.0), 2))
+        pressure = str(round(random.uniform(980, 1020), 2))
+        voltage = str(round(random.uniform(6.5, 8.4), 2))
+        gps_time = datetime.now().strftime("%H:%M:%S")
+        gps_date = datetime.now().strftime("%Y-%m-%d")
+        gps_lat = str(round(random.uniform(34.72, 34.74), 6))
+        gps_lon = str(round(random.uniform(-86.59, -86.58), 6))
 
-plt.ion()
-fig, axs = plt.subplots(4, 2, figsize=(14, 12))
-(ax1, ax2), (ax3, ax4), (ax5, ax6), (ax7, ax8) = axs
+        packet = ",".join([
+            team_id, mission_time, packet_count, sw_state, pl_state, altitude,
+            temp, pressure, voltage, gps_time, gps_date, gps_lat, gps_lon
+        ])
+        return packet
 
-def generate_packet(current_time):
-    if SIMULATOR_MODE:
-        # test
-        altitude = random.uniform(0, 600)
-        temperature = random.uniform(-10, 40)
-        pressure = random.uniform(950, 1050)
-        tilt_x_val = random.uniform(-90, 90)
-        tilt_y_val = random.uniform(-90, 90)
-        voltage_val = random.uniform(2.5, 3.6)
-        lat = random.uniform(34.7, 34.8)
-        lon = random.uniform(-86.7, -86.6)
-    else:
-        # real values
-        tilt = bno.euler or (0, 0, 0)
-        tilt_x_val, tilt_y_val = tilt[0], tilt[1]
-        altitude = bmp.altitude
-        pressure = bmp.pressure
-        temperature = bmp.temperature
-        voltage_val = read_voltage()
-        lat, lon = read_gps()
+    def parse_packet(self, packet):
+        fields = packet.strip().split(',')
+        keys = list(self.labels.keys())
+        for i in range(len(keys)):
+            self.labels[keys[i]].setText(f"{keys[i]}: {fields[i]}")
 
-    return {
-        "altitude": altitude,
-        "temperature": temperature,
-        "pressure": pressure,
-        "tilt_x": tilt_x_val,
-        "tilt_y": tilt_y_val,
-        "voltage": voltage_val,
-        "gps_lat": lat,
-        "gps_lon": lon,
-        "time": current_time
-    }
+        self.time_counter += 1
+        updates = {
+            "Altitude vs Time": float(fields[5]),
+            "Temperature vs Time": float(fields[6]),
+            "Pressure vs Time": float(fields[7]),
+            "Velocity vs Time": float(fields[5]) / 10,
+            "Displacement vs Time": float(fields[5]) / 2,
+            "Tilt vs Time": float(fields[5]) % 45
+        }
+        for title, value in updates.items():
+            ax, x_data, y_data, canvas = self.graphs[title]
+            x_data.append(self.time_counter)
+            y_data.append(value)
+            ax.clear()
+            ax.plot(x_data, y_data, color='blue')
+            ax.set_title(title)
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel(title.split(" vs ")[0])
+            canvas.draw()
 
-# CSV
-log_file = open("flight_log.csv", "w", newline="")
-csv_writer = csv.writer(log_file)
-csv_writer.writerow([
-    "Time", "Altitude", "Temperature", "Pressure", "Velocity",
-    "Tilt_X", "Tilt_Y", "Voltage", "GPS_Lat", "GPS_Lon", "State"
-])
-
-command = None
-def listen_for_command():
-    global command
-    while True:
-        try:
-            cmd = input().strip().lower()
-            if cmd == "help":
-                print("Available commands: release, land, help")
-            else:
-                command = cmd
-        except EOFError:
-            break
-
-threading.Thread(target=listen_for_command, daemon=True).start()
-
-while True:
-    current_time = time.time() - start_time
-    packet_count += 1
-
-    packet = generate_packet(current_time)
-
-    altitude = packet["altitude"]
-    temperature_val = packet["temperature"]
-    pressure_val = packet["pressure"]
-    tilt_x_val = packet["tilt_x"]
-    tilt_y_val = packet["tilt_y"]
-    voltage_val = packet["voltage"]
-    lat = packet["gps_lat"]
-    lon = packet["gps_lon"]
-
-    if prev_altitude is not None and prev_time is not None:
-        dt = current_time - prev_time
-        velocity_val = (altitude - prev_altitude) / dt if dt > 0 else 0
-    else:
-        velocity_val = 0
-    prev_altitude = altitude
-    prev_time = current_time
-
-    csv_writer.writerow([
-        current_time, altitude, temperature_val, pressure_val, velocity_val,
-        tilt_x_val, tilt_y_val, voltage_val, lat, lon, state
-    ])
-    log_file.flush()
-
-    if command == "release":
-        print("Manual release triggered!")
-        transition("RELEASE")
-        command = None
-    if command == "land":
-        print("Manual landing triggered!")
-        transition("LANDING")
-        command = None
-
-    times.append(current_time)
-    altitudes.append(altitude)
-    temperature.append(temperature_val)
-    pressure.append(pressure_val)
-    velocity_data.append(velocity_val)
-    tilt_x.append(tilt_x_val)
-    tilt_y.append(tilt_y_val)
-    voltage_data.append(voltage_val)
-    gps_lat.append(lat if lat else 0)
-    gps_lon.append(lon if lon else 0)
-
-    if state == "POWER":
-        transition("PRELAUNCH")
-
-    elif state == "PRELAUNCH":
-        if altitude > 0:
-            transition("LAUNCH")
-
-    elif state == "LAUNCH":
-        if altitude > 5:
-            transition("ASCENT")
-
-    elif state == "ASCENT":
-        if altitude >= 550:
-            transition("RELEASE")
-
-    elif state == "RELEASE":
-        print("Payload released!")
-        transition("DESCENT")
-
-    elif state == "DESCENT":
-        if velocity_val < 3:
-            transition("LANDING")
-
-    elif state == "LANDING":
-        print("Landing complete. LED/Buzzer ON.")
-        break
-
-    #alt
-    ax1.clear()
-    ax1.plot(times, altitudes, color='blue')
-    ax1.set_title("Altitude vs Time")
-    ax1.set_xlabel("Time (s)")
-    ax1.set_ylabel("Altitude (m)")
-    ax1.grid(True)
-
-    #temp
-    ax2.clear()
-    ax2.plot(times, temperature, color='orange')
-    ax2.set_title("Temperature vs Time")
-    ax2.set_xlabel("Time (s)")
-    ax2.set_ylabel("°C")
-    ax2.grid(True)
-
-    #pressure
-    ax3.clear()
-    ax3.plot(times, pressure, color='purple')
-    ax3.set_title("Pressure vs Time")
-    ax3.set_xlabel("Time (s)")
-    ax3.set_ylabel("Pressure (hPa)")
-    ax3.grid(True)
-
-    #velocity
-    ax4.clear()
-    ax4.plot(times, velocity_data, color='magenta')
-    ax4.set_title("Velocity vs Time")
-    ax4.set_xlabel("Time (s)")
-    ax4.set_ylabel("Velocity (m/s)")
-    ax4.grid(True)
-
-    #tilt
-    ax5.clear()
-    ax5.plot(times, tilt_x, label="Tilt X", color='red')
-    ax5.plot(times, tilt_y, label="Tilt Y", color='green')
-    ax5.set_title("Tilt vs Time")
-    ax5.set_xlabel("Time (s)")
-    ax5.set_ylabel("Degrees")
-    ax5.legend()
-    ax5.grid(True)
-
-    #voltage
-    ax6.clear()
-    ax6.plot(times, voltage_data, color='brown')
-    ax6.set_title("Voltage vs Time")
-    ax6.set_xlabel("Time (s)")
-    ax6.set_ylabel("Volts")
-    ax6.grid(True)
-
-    #GPS
-    ax7.clear()
-    ax7.scatter(gps_lon, gps_lat, c='blue', s=20)
-    ax7.set_title("GPS Location")
-    ax7.set_xlabel("Longitude")
-    ax7.set_ylabel("Latitude")
-    ax7.grid(True)
-
-    ax8.clear()
-    ax8.text(0.5, 0.5, f"Packets: {packet_count}\nState: {state}",
-             ha='center', va='center', fontsize=12)
-    ax8.set_title("Mission Info")
-    ax8.axis('off')
-
-    plt.tight_layout()
-    plt.pause(0.1)
-
-log_file.close()
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = GroundStation()
+    window.show()
+    sys.exit(app.exec())
