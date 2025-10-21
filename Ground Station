@@ -1,10 +1,10 @@
 import sys
-import random
 from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QGroupBox
+    QGridLayout, QGroupBox, QSpacerItem, QSizePolicy
 )
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtCore import QTimer
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -19,13 +19,36 @@ class GroundStation(QWidget):
         left_layout = QVBoxLayout()
         graph_grid = QGridLayout()
 
+        #logo!!!!
+        logo_layout = QHBoxLayout()
+
+        logo1 = QLabel()
+        pixmap1 = QPixmap("team_logo1.png")
+        if not pixmap1.isNull():
+            logo1.setPixmap(pixmap1.scaledToWidth(100))
+        else:
+            logo1.setText("Logo 1 not found")
+
+        logo2 = QLabel()
+        pixmap2 = QPixmap("team_logo2.png")
+        if not pixmap2.isNull():
+            logo2.setPixmap(pixmap2.scaledToWidth(100))
+        else:
+            logo2.setText("Logo 2 not found")
+
+        logo_layout.addWidget(logo1)
+        logo_layout.addWidget(logo2)
+
+        left_layout.addLayout(logo_layout)
+        team_label = QLabel("<b>Team: COB-SAT</b>")
+        left_layout.addWidget(team_label)
+
         self.summary = QGroupBox("Mission Summary")
         summary_layout = QVBoxLayout()
         self.labels = {}
         fields = [
-            "Mission Time", "Packet Count", "Flight State", "Flight Time", "Altitude",
-            "Temperature", "Pressure", "Voltage", "GPS Time", "GPS Date",
-            "GPS Latitude", "GPS Longitude"
+            "Packet Count", "GPS Latitude", "GPS Longitude", "GPS Time",
+            "GPS Date", "Current State", "Ground Altitude"
         ]
         for field in fields:
             label = QLabel(f"{field}: ---")
@@ -38,81 +61,108 @@ class GroundStation(QWidget):
             btn = QPushButton(text)
             left_layout.addWidget(btn)
 
+        self.ground_altitude = None
+        self.payload_released = False
+        init_btn = QPushButton("Initialize Sensors")
+        init_btn.clicked.connect(self.initialize_sensors)
+        left_layout.addWidget(init_btn)
+
+        left_layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
+
         self.graphs = {}
         graph_titles = [
-            "Altitude vs Time", "Temperature vs Time", "Pressure vs Time",
-            "Velocity vs Time", "Displacement vs Time", "Tilt vs Time"
+            "Altitude", "Temperature", "Pressure",
+            "Velocity", "Displacement", "Tilt"
         ]
         for i, title in enumerate(graph_titles):
             fig = Figure(figsize=(4, 3))
             canvas = FigureCanvas(fig)
             ax = fig.add_subplot(111)
-            ax.set_title(title)
             ax.set_xlabel("Time (s)")
-            ax.set_ylabel(title.split(" vs ")[0])
-            self.graphs[title] = (ax, [], [], canvas)
+            ax.set_ylabel(title)
+            value_label = QLabel(f"{title}: ---")
+            self.graphs[title] = {
+                "ax": ax,
+                "x": [],
+                "y": [],
+                "canvas": canvas,
+                "label": value_label
+            }
             row, col = divmod(i, 2)
-            graph_grid.addWidget(canvas, row, col)
+            graph_grid.addWidget(value_label, row * 2, col)
+            graph_grid.addWidget(canvas, row * 2 + 1, col)
 
         main_layout.addLayout(left_layout, 1)
         main_layout.addLayout(graph_grid, 2)
         self.setLayout(main_layout)
 
+        # fix input timer - placeholder
         self.timer = QTimer()
         self.timer.timeout.connect(self.receive_packet)
         self.timer.start(1000)
         self.time_counter = 0
 
+    def initialize_sensors(self):
+        if hasattr(self, "last_altitude"):
+            self.ground_altitude = self.last_altitude
+            self.labels["Ground Altitude"].setText(f"Ground Altitude: {self.ground_altitude}")
+        else:
+            self.labels["Ground Altitude"].setText("Ground Altitude: ---")
+
+    def activate_servo(self):
+        print("🔧 Servo activated: Payload released!")
+        # ADD SERVO CODE
+
     def receive_packet(self):
-        packet = self.generate_simulated_packet()
-        self.parse_packet(packet)
-
-    def generate_simulated_packet(self):
-        team_id = "UAH01"
-        mission_time = datetime.now().strftime("%H:%M:%S")
-        packet_count = str(self.time_counter)
-        sw_state = random.choice(["DEPLOYED", "STANDBY"])
-        pl_state = random.choice(["ACTIVE", "IDLE"])
-        altitude = str(round(random.uniform(1000, 3000), 2))
-        temp = str(round(random.uniform(15.0, 30.0), 2))
-        pressure = str(round(random.uniform(980, 1020), 2))
-        voltage = str(round(random.uniform(6.5, 8.4), 2))
-        gps_time = datetime.now().strftime("%H:%M:%S")
-        gps_date = datetime.now().strftime("%Y-%m-%d")
-        gps_lat = str(round(random.uniform(34.72, 34.74), 6))
-        gps_lon = str(round(random.uniform(-86.59, -86.58), 6))
-
-        packet = ",".join([
-            team_id, mission_time, packet_count, sw_state, pl_state, altitude,
-            temp, pressure, voltage, gps_time, gps_date, gps_lat, gps_lon
-        ])
-        return packet
+        packet = None  # Inject real packet
+        if packet:
+            self.parse_packet(packet)
 
     def parse_packet(self, packet):
         fields = packet.strip().split(',')
-        keys = list(self.labels.keys())
-        for i in range(len(keys)):
-            self.labels[keys[i]].setText(f"{keys[i]}: {fields[i]}")
+        if len(fields) != 13:
+            return
 
         self.time_counter += 1
+
+        self.labels["Packet Count"].setText(f"Packet Count: {fields[2]}")
+        self.labels["GPS Latitude"].setText(f"GPS Latitude: {fields[11]}")
+        self.labels["GPS Longitude"].setText(f"GPS Longitude: {fields[12]}")
+        self.labels["GPS Time"].setText(f"GPS Time: {fields[9]}")
+        self.labels["GPS Date"].setText(f"GPS Date: {fields[10]}")
+        self.labels["Current State"].setText(f"Current State: {fields[3]}, {fields[4]}")
+
+        self.last_altitude = float(fields[5])
+        relative_altitude = (
+            self.last_altitude - self.ground_altitude
+            if self.ground_altitude is not None else self.last_altitude
+        )
+
+        # servo
+        if not self.payload_released and relative_altitude <= 530:
+            self.activate_servo()
+            self.payload_released = True
+
         updates = {
-            "Altitude vs Time": float(fields[5]),
-            "Temperature vs Time": float(fields[6]),
-            "Pressure vs Time": float(fields[7]),
-            "Velocity vs Time": float(fields[5]) / 10,
-            "Displacement vs Time": float(fields[5]) / 2,
-            "Tilt vs Time": float(fields[5]) % 45
+            "Altitude": relative_altitude,
+            "Temperature": float(fields[6]),
+            "Pressure": float(fields[7]),
+            "Velocity": relative_altitude / 10,
+            "Displacement": relative_altitude / 2,
+            "Tilt": relative_altitude % 45
         }
+
         for title, value in updates.items():
-            ax, x_data, y_data, canvas = self.graphs[title]
-            x_data.append(self.time_counter)
-            y_data.append(value)
+            graph = self.graphs[title]
+            graph["x"].append(self.time_counter)
+            graph["y"].append(value)
+            graph["label"].setText(f"{title}: {value}")
+            ax = graph["ax"]
             ax.clear()
-            ax.plot(x_data, y_data, color='blue')
-            ax.set_title(title)
+            ax.plot(graph["x"], graph["y"], color='blue')
             ax.set_xlabel("Time (s)")
-            ax.set_ylabel(title.split(" vs ")[0])
-            canvas.draw()
+            ax.set_ylabel(title)
+            graph["canvas"].draw()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
