@@ -19,7 +19,6 @@ class GroundStation(QWidget):
         left_layout = QVBoxLayout()
         graph_grid = QGridLayout()
 
-        #logo!!!!
         logo_layout = QHBoxLayout()
 
         logo1 = QLabel()
@@ -27,14 +26,14 @@ class GroundStation(QWidget):
         if not pixmap1.isNull():
             logo1.setPixmap(pixmap1.scaledToWidth(100))
         else:
-            logo1.setText("Logo 1 not found")
+            logo1.setText("agh")
 
         logo2 = QLabel()
         pixmap2 = QPixmap("team_logo2.png")
         if not pixmap2.isNull():
             logo2.setPixmap(pixmap2.scaledToWidth(100))
         else:
-            logo2.setText("Logo 2 not found")
+            logo2.setText("dust")
 
         logo_layout.addWidget(logo1)
         logo_layout.addWidget(logo2)
@@ -96,7 +95,6 @@ class GroundStation(QWidget):
         main_layout.addLayout(graph_grid, 2)
         self.setLayout(main_layout)
 
-        # fix input timer - placeholder
         self.timer = QTimer()
         self.timer.timeout.connect(self.receive_packet)
         self.timer.start(1000)
@@ -110,7 +108,7 @@ class GroundStation(QWidget):
             self.labels["Ground Altitude"].setText("Ground Altitude: ---")
 
     def activate_servo(self):
-        print("🔧 Servo activated: Payload released!")
+        pass
         # ADD SERVO CODE
 
     def receive_packet(self):
