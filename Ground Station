@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime
+import serial
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QSpacerItem, QSizePolicy
@@ -9,36 +9,42 @@ from PyQt6.QtCore import QTimer
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
+
 class GroundStation(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("COB-SAT Ground Station")
         self.resize(1200, 800)
 
+        try:
+            self.serial = serial.Serial("COM3", 9600, timeout=1)  # adjust COM port
+        except Exception as e:
+            print("Serial connection failed:", e)
+            self.serial = None
+
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
         graph_grid = QGridLayout()
 
         logo_layout = QHBoxLayout()
-
         logo1 = QLabel()
         pixmap1 = QPixmap("team_logo1.png")
         if not pixmap1.isNull():
             logo1.setPixmap(pixmap1.scaledToWidth(100))
         else:
-            logo1.setText("agh")
+            logo1.setText("Logo1 Missing")
 
         logo2 = QLabel()
         pixmap2 = QPixmap("team_logo2.png")
         if not pixmap2.isNull():
             logo2.setPixmap(pixmap2.scaledToWidth(100))
         else:
-            logo2.setText("dust")
+            logo2.setText("Logo2 Missing")
 
         logo_layout.addWidget(logo1)
         logo_layout.addWidget(logo2)
-
         left_layout.addLayout(logo_layout)
+
         team_label = QLabel("<b>Team: COB-SAT</b>")
         left_layout.addWidget(team_label)
 
@@ -46,22 +52,36 @@ class GroundStation(QWidget):
         summary_layout = QVBoxLayout()
         self.labels = {}
         fields = [
-            "Packet Count", "GPS Latitude", "GPS Longitude", "GPS Time",
-            "GPS Date", "Current State", "Ground Altitude"
+            "Packet Count", "GPS Latitude", "GPS Longitude",
+            "Current State", "Ground Altitude"
         ]
         for field in fields:
             label = QLabel(f"{field}: ---")
             self.labels[field] = label
             summary_layout.addWidget(label)
+
+        attitude_key = QLabel(
+            "Attitude Key: "
+            "<font color='red'>Roll</font>, "
+            "<font color='green'>Pitch</font>, "
+            "<font color='blue'>Yaw</font>"
+        )
+        summary_layout.addWidget(attitude_key)
+
         self.summary.setLayout(summary_layout)
         left_layout.addWidget(self.summary)
 
-        for text in ["Release", "Retrieve Save Data", "Activate LED & Buzzer"]:
+        self.release_btn = QPushButton("Release Payload (Manual Override)")
+        self.release_btn.clicked.connect(self.activate_servo)
+        left_layout.addWidget(self.release_btn)
+
+        for text in ["Retrieve Save Data", "Activate LED & Buzzer"]:
             btn = QPushButton(text)
             left_layout.addWidget(btn)
 
         self.ground_altitude = None
         self.payload_released = False
+
         init_btn = QPushButton("Initialize Sensors")
         init_btn.clicked.connect(self.initialize_sensors)
         left_layout.addWidget(init_btn)
@@ -70,8 +90,8 @@ class GroundStation(QWidget):
 
         self.graphs = {}
         graph_titles = [
-            "Altitude", "Temperature", "Pressure",
-            "Velocity", "Displacement", "Tilt"
+            "Altitude", "Temperature", "Voltage",
+            "Velocity", "Displacement", "Attitude"
         ]
         for i, title in enumerate(graph_titles):
             fig = Figure(figsize=(4, 3))
@@ -80,13 +100,26 @@ class GroundStation(QWidget):
             ax.set_xlabel("Time (s)")
             ax.set_ylabel(title)
             value_label = QLabel(f"{title}: ---")
-            self.graphs[title] = {
-                "ax": ax,
-                "x": [],
-                "y": [],
-                "canvas": canvas,
-                "label": value_label
-            }
+
+            if title == "Attitude":
+                self.graphs[title] = {
+                    "ax": ax,
+                    "x": [],
+                    "roll": [],
+                    "pitch": [],
+                    "yaw": [],
+                    "canvas": canvas,
+                    "label": value_label
+                }
+            else:
+                self.graphs[title] = {
+                    "ax": ax,
+                    "x": [],
+                    "y": [],
+                    "canvas": canvas,
+                    "label": value_label
+                }
+
             row, col = divmod(i, 2)
             graph_grid.addWidget(value_label, row * 2, col)
             graph_grid.addWidget(canvas, row * 2 + 1, col)
@@ -105,62 +138,119 @@ class GroundStation(QWidget):
             self.ground_altitude = self.last_altitude
             self.labels["Ground Altitude"].setText(f"Ground Altitude: {self.ground_altitude}")
         else:
-            self.labels["Ground Altitude"].setText("Ground Altitude: ---")
+            self.labels["Ground Altitude"].setText("Ground Altitude: Awaiting first packet")
+            print("Init sensors requested before first packet; ground altitude not set yet.")
 
     def activate_servo(self):
-        pass
-        # ADD SERVO CODE
+        if self.payload_released:
+            print("Manual override ignored: payload already marked released.")
+            return
+        if self.serial and self.serial.is_open:
+            self.serial.write(b"RELEASE\n")
+            self.payload_released = True
+            self.release_btn.setEnabled(False)
+            self.labels["Current State"].setText("Current State: Payload Released (Command Sent)")
+            print("Sent RELEASE command to Arduino")
+        else:
+            print("Serial not connected")
 
     def receive_packet(self):
-        packet = None  # Inject real packet
-        if packet:
-            self.parse_packet(packet)
+        if self.serial and self.serial.in_waiting:
+            try:
+                packet = self.serial.readline().decode(errors="ignore").strip()
+                if packet:
+                    self.parse_packet(packet)
+            except Exception as e:
+                print("Error reading packet:", e)
 
     def parse_packet(self, packet):
         fields = packet.strip().split(',')
-        if len(fields) != 13:
+        if len(fields) < 15:
+            print(f"Dropped packet (wrong field count {len(fields)}): {packet}")
             return
 
         self.time_counter += 1
 
+        # TEAM_ID (0), MISSION_TIME (1), PACKET_COUNT (2), SW_STATE (3), PL_STATE (4),
+        # ALTITUDE (5), TEMP (6), VOLTAGE (7), GPS_LATITUDE (8), GPS_LONGITUDE (9),
+        # GYRO_R (10), GYRO_P (11), GYRO_Y (12), (empty 13), EXTRA_DATA (14)
+
         self.labels["Packet Count"].setText(f"Packet Count: {fields[2]}")
-        self.labels["GPS Latitude"].setText(f"GPS Latitude: {fields[11]}")
-        self.labels["GPS Longitude"].setText(f"GPS Longitude: {fields[12]}")
-        self.labels["GPS Time"].setText(f"GPS Time: {fields[9]}")
-        self.labels["GPS Date"].setText(f"GPS Date: {fields[10]}")
+        self.labels["GPS Latitude"].setText(f"GPS Latitude: {fields[8]}")
+        self.labels["GPS Longitude"].setText(f"GPS Longitude: {fields[9]}")
         self.labels["Current State"].setText(f"Current State: {fields[3]}, {fields[4]}")
 
-        self.last_altitude = float(fields[5])
+        try:
+            altitude_val = float(fields[5])
+        except Exception:
+            print(f"Dropped packet (invalid altitude '{fields[5]}'): {packet}")
+            return
+
+        self.last_altitude = altitude_val
         relative_altitude = (
             self.last_altitude - self.ground_altitude
             if self.ground_altitude is not None else self.last_altitude
         )
 
-        # servo
         if not self.payload_released and relative_altitude <= 530:
             self.activate_servo()
-            self.payload_released = True
+
+        def to_float(idx, name):
+            try:
+                return float(fields[idx])
+            except Exception:
+                print(f"Dropped field '{name}' (value '{fields[idx]}') in packet: {packet}")
+                return None
+
+        temp = to_float(6, "TEMP")
+        volt = to_float(7, "VOLTAGE")
+        roll = to_float(10, "GYRO_R")
+        pitch = to_float(11, "GYRO_P")
+        yaw = to_float(12, "GYRO_Y")
 
         updates = {
             "Altitude": relative_altitude,
-            "Temperature": float(fields[6]),
-            "Pressure": float(fields[7]),
+            "Temperature": temp if temp is not None else 0.0,
+            "Voltage": volt if volt is not None else 0.0,
             "Velocity": relative_altitude / 10,
             "Displacement": relative_altitude / 2,
-            "Tilt": relative_altitude % 45
+            "Attitude": {
+                "roll": roll if roll is not None else 0.0,
+                "pitch": pitch if pitch is not None else 0.0,
+                "yaw": yaw if yaw is not None else 0.0
+            }
         }
 
         for title, value in updates.items():
             graph = self.graphs[title]
-            graph["x"].append(self.time_counter)
-            graph["y"].append(value)
-            graph["label"].setText(f"{title}: {value}")
-            ax = graph["ax"]
-            ax.clear()
-            ax.plot(graph["x"], graph["y"], color='blue')
-            ax.set_xlabel("Time (s)")
-            ax.set_ylabel(title)
-            graph["canvas"].draw()
+            if title == "Attitude":
+                graph["x"].append(self.time_counter)
+                graph["roll"].append(value["roll"])
+                graph["pitch"].append(value["pitch"])
+                graph["yaw"].append(value["yaw"])
+                graph["label"].setText(
+                    f"Attitude: Roll={value['roll']}, Pitch={value['pitch']}, Yaw={value['yaw']}"
+                )
+                ax = graph["ax"]
+                ax.clear()
+                ax.plot(graph["x"], graph["roll"], color='red', label="Roll")
+                ax.plot(graph["x"], graph["pitch"], color='green', label="Pitch")
+                ax.plot(graph["x"], graph["yaw"], color='blue', label="Yaw")
+                ax.set_xlabel("Time (s)")
+                ax.set_ylabel("Degrees")
+                ax.legend(loc="upper right")
+                graph["canvas"].draw()
+            else:
+                graph["x"].append(self.time_counter)
+                graph["y"].append(value)
+                graph["label"].setText(f"{title}: {value}")
+                ax = graph["ax"]
+                ax.clear()
+                ax.plot(graph["x"], graph["y"], color='blue')
+                ax.set_xlabel("Time (s)")
+                ax.set_ylabel(title)
+                graph["canvas"].draw()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
